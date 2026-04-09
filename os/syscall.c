@@ -95,12 +95,119 @@ uint64 sys_wait(int pid, uint64 va)
 uint64 sys_spawn(uint64 va)
 {
 	// TODO: your job is to complete the sys call
-	return -1;
+	char filename[128];
+	struct proc *p = curr_proc();
+	struct proc *np;
+	if (copyinstr(p->pagetable, filename, va, 128) < 0) {
+		return -1;
+	}
+	int id = get_id_by_name(filename);
+	if (id < 0) {
+		return -1;
+	}
+	np = allocproc();
+	if (np == 0) {
+		return -1;
+	}
+	np->parent = p;
+	if (loader(id, np)< 0) {
+		return -1;
+	}
+	np->state = RUNNABLE;	
+	return np->pid;
 }
 
 uint64 sys_set_priority(long long prio){
     // TODO: your job is to complete the sys call
-    return -1;
+	if (prio<2){
+		return -1;
+	}
+
+	struct proc *p = curr_proc();
+	p->priority = prio;
+	p->pass = BIG_STRIDE/p->priority;
+    return prio;
+}
+
+uint64 sys_mmap(void * start, unsigned long long len, int port, int flag, int fd)
+{
+	uint64 va_start = (uint64) start; //void pointer
+    // insufficient physical memory
+    if (len > (1 << 30)) {
+        return -1;
+    }
+	// length is a multiple of page size
+    if (va_start % PGSIZE != 0) {
+        return -1;
+    }
+    // port must have at least one of bits 0-2 set, no more
+    if ((port & ~0x7) != 0 || (port & 0x7) == 0) {
+        return -1;
+    }
+
+    struct proc *p = curr_proc();
+
+    // Check that no VA in the range is already mapped
+    for (uint64 va = va_start; va < va_start + len; va += PGSIZE) {
+        if (walkaddr(p->pagetable, va) != 0) { return -1; };
+    }
+
+    // Build permission bits from port
+    int perm = PTE_U;
+    if (port & 1) perm = perm | PTE_R;
+    if (port & 2) perm = perm | PTE_W;
+    if (port & 4) perm = perm | PTE_X;
+
+    // loc one page at a time, memset, then map via mappages
+	// returns a pointer that kernal can use
+    for (uint64 va = va_start; va < va_start + len; va += PGSIZE) {
+        void *pa = kalloc();
+		if (!pa) { return -1; }
+
+        memset(pa, 0, PGSIZE);
+        // mappages for a single page (size = PGSIZE)
+		// creates a page table address
+        if (mappages(p->pagetable, va, PGSIZE, (uint64)pa, perm) < 0) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+uint64 sys_munmap(void * start, unsigned long long len)
+{
+	uint64 va_start = (uint64) start;
+
+	//fail if memory is not allocated
+	if (len == 0) {
+		return 0;
+	}
+
+    if (va_start % PGSIZE != 0) {
+        return -1;
+    }
+
+    // end of range, rounded up
+	len = PGROUNDUP(len);
+    uint64 va_end = va_start + len;
+
+    struct proc *p = curr_proc();
+
+    // verify all pages in range are mapped
+    for (uint64 va = va_start; va < va_end; va += PGSIZE) {
+        if (walkaddr(p->pagetable, va) == 0) {
+			return -1;
+		}
+    }
+
+    // number of pages
+    uint64 npages = len / PGSIZE;
+
+    // unmap and free physical memory
+    uvmunmap(p->pagetable, va_start, npages, 1);
+
+    return 0;
 }
 
 
@@ -147,6 +254,15 @@ void syscall()
 		break;
 	case SYS_spawn:
 		ret = sys_spawn(args[0]);
+		break;
+	case SYS_setpriority:
+		ret = sys_set_priority(args[0]);
+		break;
+	case SYS_mmap:
+		ret = sys_mmap((void *)args[0], args[1], args[2], args[3], args[4]);
+		break;
+	case SYS_munmap:
+		ret = sys_munmap((void *)args[0], args[1]);
 		break;
 	default:
 		ret = -1;
