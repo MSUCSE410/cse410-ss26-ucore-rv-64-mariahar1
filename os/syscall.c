@@ -92,6 +92,8 @@ uint64 sys_wait(int pid, uint64 va)
 	return wait(pid, code);
 }
 
+// create a new process to run the program with the given name
+// and return the pid of the new process.
 uint64 sys_spawn(uint64 va)
 {
 	// TODO: your job is to complete the sys call
@@ -117,6 +119,8 @@ uint64 sys_spawn(uint64 va)
 	return np->pid;
 }
 
+// updating to set the priority of the current process to prio, 
+// and return the new priority. 
 uint64 sys_set_priority(long long prio){
     // TODO: your job is to complete the sys call
 	if (prio<2){
@@ -129,6 +133,7 @@ uint64 sys_set_priority(long long prio){
     return prio;
 }
 
+// from project 2
 uint64 sys_mmap(void * start, unsigned long long len, int port, int flag, int fd)
 {
 	uint64 va_start = (uint64) start; //void pointer
@@ -175,6 +180,7 @@ uint64 sys_mmap(void * start, unsigned long long len, int port, int flag, int fd
     return 0;
 }
 
+// from project 2
 uint64 sys_munmap(void * start, unsigned long long len)
 {
 	uint64 va_start = (uint64) start;
@@ -255,6 +261,7 @@ void syscall()
 	case SYS_spawn:
 		ret = sys_spawn(args[0]);
 		break;
+	// adding case for priority
 	case SYS_setpriority:
 		ret = sys_set_priority(args[0]);
 		break;

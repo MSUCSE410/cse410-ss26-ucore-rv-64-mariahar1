@@ -7,7 +7,7 @@
 
 #define NPROC (512)
 #define FD_BUFFER_SIZE (16)
-#define BIG_STRIDE 65536
+#define BIG_STRIDE 65536 // no to calculate the stride
 
 
 
@@ -48,6 +48,7 @@ struct proc {
 	struct proc *parent; // Parent process
 	uint64 exit_code;
 	struct file *files[FD_BUFFER_SIZE];
+	// adding fields for stride scheduling
 	int stride;
 	int pass;
 	long long priority;

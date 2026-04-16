@@ -103,6 +103,8 @@ found:
 //  - swtch to start running that process.
 //  - eventually that process transfers control
 //    via swtch back to the scheduler.
+
+// editing scheduler to implement stride scheduling
 void scheduler()
 {
 	struct proc *p;
@@ -111,12 +113,16 @@ void scheduler()
         for (p = pool; p < &pool[NPROC]; p++) {
             if (p->state != RUNNABLE)
                 continue;
+			// pick the process that has run the least
             if (chosen == NULL || p->pass < chosen->pass)
                 chosen = p;
         }
+		//no runnable process was found, every app has finished
         if (chosen == NULL) {
             panic("all app are over!\n");
         }
+
+		// figuring out the stride and pass for the chosen process
         chosen->pass += BIG_STRIDE / chosen->priority;
         chosen->state = RUNNING;
         current_proc = chosen;
