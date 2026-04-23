@@ -68,6 +68,35 @@ void add_task(struct proc *p)
 	debugf("add task %d(pid=%d) to task queue\n", p - pool, p->pid);
 }
 
+
+// Scheduler never returns.  It loops, doing:
+//  - choose a process to run.
+//  - swtch to start running that process.
+//  - eventually that process transfers control
+//    via swtch back to the scheduler.
+void scheduler()
+{
+	for (;;) {
+		struct proc *chosen = NULL;
+		for (struct proc *p = pool; p < &pool[NPROC]; p++) {
+			if (p->state != RUNNABLE)
+				continue;
+			if (chosen == NULL || p->pass < chosen->pass)
+				chosen = p;
+		}
+		if (chosen == NULL) {
+			panic("all app are over!\n");
+		}
+		chosen->pass += BIG_STRIDE / chosen->priority;
+		chosen->state = RUNNING;
+		current_proc = chosen;
+		swtch(&idle.context, &chosen->context);
+	}
+}
+
+
+
+
 // Look in the process table for an UNUSED proc.
 // If found, initialize state required to run in the kernel.
 // If there are no free procs, or a memory allocation fails, return 0.
@@ -96,6 +125,11 @@ found:
 	memset((void *)p->files, 0, sizeof(struct file *) * FD_BUFFER_SIZE);
 	p->context.ra = (uint64)usertrapret;
 	p->context.sp = p->kstack + KSTACK_SIZE;
+
+	p->stride = 0;
+	p->priority = 16;
+	p->pass = BIG_STRIDE/p->priority;
+
 	return p;
 }
 
@@ -110,38 +144,6 @@ int init_stdio(struct proc *p)
 	return 0;
 }
 
-// Scheduler never returns.  It loops, doing:
-//  - choose a process to run.
-//  - swtch to start running that process.
-//  - eventually that process transfers control
-//    via swtch back to the scheduler.
-void scheduler()
-{
-	struct proc *p;
-	for (;;) {
-		/*int has_proc = 0;
-		for (p = pool; p < &pool[NPROC]; p++) {
-			if (p->state == RUNNABLE) {
-				has_proc = 1;
-				tracef("swtich to proc %d", p - pool);
-				p->state = RUNNING;
-				current_proc = p;
-				swtch(&idle.context, &p->context);
-			}
-		}
-		if(has_proc == 0) {
-			panic("all app are over!\n");
-		}*/
-		p = fetch_task();
-		if (p == NULL) {
-			panic("all app are over!\n");
-		}
-		tracef("swtich to proc %d", p - pool);
-		p->state = RUNNING;
-		current_proc = p;
-		swtch(&idle.context, &p->context);
-	}
-}
 
 // Switch to scheduler.  Must hold only p->lock
 // and have changed proc->state. Saves and restores
@@ -162,7 +164,7 @@ void sched()
 void yield()
 {
 	current_proc->state = RUNNABLE;
-	add_task(current_proc);
+	// add_task(current_proc);
 	sched();
 }
 
@@ -216,7 +218,7 @@ int fork()
 	np->trapframe->a0 = 0;
 	np->parent = p;
 	np->state = RUNNABLE;
-	add_task(np);
+	// add_task(np);
 	return np->pid;
 }
 
@@ -297,7 +299,7 @@ int wait(int pid, int *code)
 			return -1;
 		}
 		p->state = RUNNABLE;
-		add_task(p);
+		// add_task(p);
 		sched();
 	}
 }

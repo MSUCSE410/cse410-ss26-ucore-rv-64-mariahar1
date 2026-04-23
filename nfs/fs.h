@@ -45,7 +45,10 @@ struct superblock {
 // On-disk inode structure
 struct dinode {
 	short type; // File type
-	short pad[3];
+	// short pad[3];
+	short nlink;   // Number of hard links, was pad[0]
+    short pad[2];  // was pad[3], now pad[2]
+
 	uint size; // Size of file (bytes)
 	uint addrs[NDIRECT + 1]; // Data block addresses
 };

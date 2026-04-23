@@ -5,6 +5,7 @@
 #include "syscall_ids.h"
 #include "timer.h"
 #include "trap.h"
+#include "stat.h"
 
 uint64 console_write(uint64 va, uint64 len)
 {
@@ -144,15 +145,139 @@ uint64 sys_wait(int pid, uint64 va)
 
 uint64 sys_spawn(uint64 va)
 {
-	// TODO: your job is to complete the sys call
-	return -1;
+    char filename[128];
+    struct proc *p = curr_proc();
+    struct proc *np;
+
+    if (copyinstr(p->pagetable, filename, va, 128) < 0) {
+        return -1;
+    }
+
+    // get inode from filename
+    struct inode *ip = namei(filename);
+    if (ip == 0) {
+        return -1;
+    }
+
+    ivalid(ip);
+
+    // allocate process
+    np = allocproc();
+    if (np == 0) {
+        iput(ip);
+        return -1;
+    }
+
+    np->parent = p;
+
+    // load program into process
+    if (bin_loader(ip, np) < 0) {
+        iput(ip);
+        return -1;
+    }
+
+    iput(ip);  // release inode
+
+    np->state = RUNNABLE;
+    return np->pid;
 }
+
 
 uint64 sys_set_priority(long long prio)
 {
 	// TODO: your job is to complete the sys call
-	return -1;
+	if (prio<2){
+		return -1;
+	}
+
+	struct proc *p = curr_proc();
+	p->priority = prio;
+	p->pass = BIG_STRIDE/p->priority;
+    return prio;
 }
+
+
+uint64 sys_mmap(void * start, unsigned long long len, int port, int flag, int fd)
+{
+	uint64 va_start = (uint64) start; //void pointer
+    // insufficient physical memory
+    if (len > (1 << 30)) {
+        return -1;
+    }
+	// length is a multiple of page size
+    if (va_start % PGSIZE != 0) {
+        return -1;
+    }
+    // port must have at least one of bits 0-2 set, no more
+    if ((port & ~0x7) != 0 || (port & 0x7) == 0) {
+        return -1;
+    }
+
+    struct proc *p = curr_proc();
+
+    // Check that no VA in the range is already mapped
+    for (uint64 va = va_start; va < va_start + len; va += PGSIZE) {
+        if (walkaddr(p->pagetable, va) != 0) { return -1; };
+    }
+
+    // Build permission bits from port
+    int perm = PTE_U;
+    if (port & 1) perm = perm | PTE_R;
+    if (port & 2) perm = perm | PTE_W;
+    if (port & 4) perm = perm | PTE_X;
+
+    // loc one page at a time, memset, then map via mappages
+	// returns a pointer that kernal can use
+    for (uint64 va = va_start; va < va_start + len; va += PGSIZE) {
+        void *pa = kalloc();
+		if (!pa) { return -1; }
+
+        memset(pa, 0, PGSIZE);
+        // mappages for a single page (size = PGSIZE)
+		// creates a page table address
+        if (mappages(p->pagetable, va, PGSIZE, (uint64)pa, perm) < 0) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+uint64 sys_munmap(void * start, unsigned long long len)
+{
+	uint64 va_start = (uint64) start;
+
+	//fail if memory is not allocated
+	if (len == 0) {
+		return 0;
+	}
+
+    if (va_start % PGSIZE != 0) {
+        return -1;
+    }
+
+    // end of range, rounded up
+	len = PGROUNDUP(len);
+    uint64 va_end = va_start + len;
+
+    struct proc *p = curr_proc();
+
+    // verify all pages in range are mapped
+    for (uint64 va = va_start; va < va_end; va += PGSIZE) {
+        if (walkaddr(p->pagetable, va) == 0) {
+			return -1;
+		}
+    }
+
+    // number of pages
+    uint64 npages = len / PGSIZE;
+
+    // unmap and free physical memory
+    uvmunmap(p->pagetable, va_start, npages, 1);
+
+    return 0;
+}
+
 
 uint64 sys_openat(uint64 va, uint64 omode, uint64 _flags)
 {
@@ -179,17 +304,78 @@ uint64 sys_close(int fd)
 
 int sys_fstat(int fd,uint64 stat){
 	//TODO: your job is to complete the syscall
-	return -1;
+	if (fd < 0 || fd >= FD_BUFFER_SIZE)
+        return -1;
+    struct proc *p = curr_proc();
+    struct file *f = p->files[fd];
+    if (f == NULL)
+        return -1;
+    return filestat(f, stat);
 }
 
 int sys_linkat(int olddirfd, uint64 oldpath, int newdirfd, uint64 newpath, uint64 flags){
 	//TODO: your job is to complete the syscall
-	return -1;
+	struct proc *p = curr_proc();
+    char old[MAXPATH], new[MAXPATH];
+    copyinstr(p->pagetable, old, oldpath, MAXPATH);
+    copyinstr(p->pagetable, new, newpath, MAXPATH);
+
+    struct inode *ip = namei(old);
+    if (ip == 0)
+        return -1;
+    ivalid(ip);
+
+    // Disallow linking with the same name
+    if (strncmp(old, new, MAXPATH) == 0) {
+        iput(ip);
+        return -1;
+    }
+
+    struct inode *dp = root_dir();
+    ivalid(dp);
+
+    ip->nlink++;
+    iupdate(ip);
+
+    if (dirlink(dp, new, ip->inum) < 0) {
+        ip->nlink--;
+        iupdate(ip);
+        iput(dp);
+        iput(ip);
+        return -1;
+    }
+
+    iput(dp);
+    iput(ip);
+    return 0;
 }
 
 int sys_unlinkat(int dirfd, uint64 name, uint64 flags){
 	//TODO: your job is to complete the syscall
-	return -1;
+	struct proc *p = curr_proc();
+    char path[MAXPATH];
+    copyinstr(p->pagetable, path, name, MAXPATH);
+
+    struct inode *ip = namei(path);
+    if (ip == 0)
+        return -1;
+    ivalid(ip);
+
+    struct inode *dp = root_dir();
+    ivalid(dp);
+
+    if (dirunlink(dp, path) < 0) {
+        iput(dp);
+        iput(ip);
+        return -1;
+    }
+
+    ip->nlink--;
+    iupdate(ip);
+
+    iput(dp);
+    iput(ip);   // triggers free if nlink == 0 && ref drops to 0
+    return 0;
 }
 
 extern char trap_page[];
@@ -247,6 +433,7 @@ void syscall()
 		break;
 	case SYS_unlinkat:
 	    ret = sys_unlinkat(args[0],args[1],args[2]);
+		break;
 	case SYS_spawn:
 		ret = sys_spawn(args[0]);
 		break;

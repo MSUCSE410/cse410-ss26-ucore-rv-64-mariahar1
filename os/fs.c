@@ -72,7 +72,6 @@ static uint balloc(uint dev)
 		}
 		brelse(bp);
 	}
-	panic("balloc: out of blocks");
 	return 0;
 }
 
@@ -114,6 +113,7 @@ struct inode *ialloc(uint dev, short type)
 		if (dip->type == 0) { // a free inode
 			memset(dip, 0, sizeof(*dip));
 			dip->type = type;
+			dip->nlink = 1;
 			bwrite(bp);
 			brelse(bp);
 			return iget(dev, inum);
@@ -137,6 +137,7 @@ void iupdate(struct inode *ip)
 	dip->type = ip->type;
 	dip->size = ip->size;
 	// LAB4: you may need to update link count here
+	dip->nlink = ip->nlink;
 	memmove(dip->addrs, ip->addrs, sizeof(ip->addrs));
 	bwrite(bp);
 	brelse(bp);
@@ -190,6 +191,7 @@ void ivalid(struct inode *ip)
 		ip->type = dip->type;
 		ip->size = dip->size;
 		// LAB4: You may need to get lint count here
+		ip->nlink = dip->nlink;
 		memmove(ip->addrs, dip->addrs, sizeof(ip->addrs));
 		brelse(bp);
 		ip->valid = 1;
@@ -208,7 +210,7 @@ void ivalid(struct inode *ip)
 void iput(struct inode *ip)
 {
 	// LAB4: Unmark the condition and change link count variable name (nlink) if needed
-	if (ip->ref == 1 && ip->valid && 0 /*&& ip->nlink == 0*/) {
+	if (ip->ref == 1 && ip->valid && ip->nlink == 0) {
 		// inode has no links and no other references: truncate and free.
 		itrunc(ip);
 		ip->type = 0;
@@ -300,8 +302,14 @@ int readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
 	if (off + n > ip->size)
 		n = ip->size - off;
 
-	for (tot = 0; tot < n; tot += m, off += m, dst += m) {
-		bp = bread(ip->dev, bmap(ip, off / BSIZE));
+	// updating the offset and destination pointer after each iteration
+	for (tot = 0; tot < n; tot += m, off += m, dst += m) { 
+		uint blk = bmap(ip, off / BSIZE);
+		if (blk == 0) {
+			tot = -1;
+			break;
+		}
+		bp = bread(ip->dev, blk);
 		m = MIN(n - tot, BSIZE - off % BSIZE);
 		if (either_copyout(user_dst, dst,
 				   (char *)bp->data + (off % BSIZE), m) == -1) {
@@ -332,7 +340,11 @@ int writei(struct inode *ip, int user_src, uint64 src, uint off, uint n)
 		return -1;
 
 	for (tot = 0; tot < n; tot += m, off += m, src += m) {
-		bp = bread(ip->dev, bmap(ip, off / BSIZE));
+		uint blk = bmap(ip, off / BSIZE);
+		if (blk == 0) {
+			break;
+		}
+		bp = bread(ip->dev, blk);
 		m = MIN(n - tot, BSIZE - off % BSIZE);
 		if (either_copyin(user_src, src,
 				  (char *)bp->data + (off % BSIZE), m) == -1) {
@@ -429,6 +441,19 @@ int dirlink(struct inode *dp, char *name, uint inum)
 }
 
 // LAB4: You may want to add dirunlink here
+int dirunlink(struct inode *dp, char *name)
+{
+    uint off;
+    struct dirent de;
+
+    if (dirlookup(dp, name, &off) == 0)
+        return -1;
+
+    memset(&de, 0, sizeof(de));
+    if (writei(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
+        panic("dirunlink");
+    return 0;
+}
 
 //Return the inode of the root directory
 struct inode *root_dir()
